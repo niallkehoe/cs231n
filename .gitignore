@@ -1,0 +1,5 @@
+# Ignore everything in datasets/
+datasets/*
+
+# But not Python files
+!datasets/**/*.py
