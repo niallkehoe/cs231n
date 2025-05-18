@@ -51,8 +51,21 @@ datasets = [
 ]
 
 
+# Initialize counters for each split
+split_stats = {
+    'train': {'images': 0, 'instances': 0},
+    'valid': {'images': 0, 'instances': 0},
+    'test': {'images': 0, 'instances': 0}
+}
+
 for dataset in datasets:
     print(f"\nProcessing dataset: {dataset}")
+    dataset_stats = {
+        'train': {'images': 0, 'instances': 0},
+        'valid': {'images': 0, 'instances': 0},
+        'test': {'images': 0, 'instances': 0}
+    }
+    
     for split in ['train', 'valid', 'test']:
         print(f"  Processing {split} split...")
         input_dir = f'{dataset}/{split}/labels'
@@ -74,3 +87,46 @@ for dataset in datasets:
 
             with open(f'{output_dir}/{filename}', 'w') as f:
                 f.write('\n'.join(new_lines))
+            
+            # Update statistics
+            dataset_stats[split]['images'] += 1
+            dataset_stats[split]['instances'] += len(new_lines)
+            split_stats[split]['images'] += 1
+            split_stats[split]['instances'] += len(new_lines)
+        
+    # Print dataset statistics
+    print("\nDataset Statistics:")
+    print("-"*50)
+    print(f"Total Images: {sum(stats['images'] for stats in split_stats.values()):,}")
+    print(f"Total Instances: {sum(stats['instances'] for stats in split_stats.values()):,}")
+    print("\nSplit Distribution:")
+    print(f"Train: {split_stats['train']['images']:,} images ({split_stats['train']['images']/sum(stats['images'] for stats in split_stats.values())*100:.1f}%)")
+    print(f"Valid: {split_stats['valid']['images']:,} images ({split_stats['valid']['images']/sum(stats['images'] for stats in split_stats.values())*100:.1f}%)")
+    print(f"Test:  {split_stats['test']['images']:,} images ({split_stats['test']['images']/sum(stats['images'] for stats in split_stats.values())*100:.1f}%)")
+
+# Print final statistics
+print("-"*100)
+print("\nFinal Dataset Statistics:")
+for split in ['train', 'valid', 'test']:
+    print(f"\n{split.capitalize()} Split:")
+    print(f"  Total Images: {split_stats[split]['images']}")
+    print(f"  Total Instances: {split_stats[split]['instances']}")
+    print(f"  Average Instances per Image: {split_stats[split]['instances']/split_stats[split]['images']:.2f}")
+
+    """
+
+Train Split:
+  Total Images: 3363
+  Total Instances: 5695
+  Average Instances per Image: 1.69
+
+Valid Split:
+  Total Images: 903
+  Total Instances: 1472
+  Average Instances per Image: 1.63
+
+Test Split:
+  Total Images: 401
+  Total Instances: 648
+  Average Instances per Image: 1.62
+  """

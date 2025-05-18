@@ -3,48 +3,8 @@ import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 from groundingdino.util.vl_utils import create_positive_map_from_span
 from groundingdino.util.utils import clean_state_dict, get_phrases_from_posmap
+from groundingdino.util.box_ops import box_iou
 
-
-# --- Plotting function from other script ---
-# def plot_boxes_to_image(image_pil, tgt):
-#     H, W = tgt["size"]
-#     boxes = tgt["boxes"]
-#     labels = tgt["labels"]
-#     assert len(boxes) == len(labels), "boxes and labels must have same length"
-
-#     draw = ImageDraw.Draw(image_pil)
-#     mask = Image.new("L", image_pil.size, 0)
-#     mask_draw = ImageDraw.Draw(mask)
-
-#     # draw boxes and masks
-#     for box, label in zip(boxes, labels):
-#         # from 0..1 to 0..W, 0..H
-#         box = box * torch.Tensor([W, H, W, H])
-#         # from xywh to xyxy
-#         box[:2] -= box[2:] / 2
-#         box[2:] += box[:2]
-#         # random color
-#         color = tuple(np.random.randint(0, 255, size=3).tolist())
-#         # draw
-#         x0, y0, x1, y1 = box
-#         x0, y0, x1, y1 = int(x0), int(y0), int(x1), int(y1)
-
-#         draw.rectangle([x0, y0, x1, y1], outline=color, width=6)
-#         # draw.text((x0, y0), str(label), fill=color)
-
-#         font = ImageFont.load_default()
-#         if hasattr(font, "getbbox"):
-#             bbox = draw.textbbox((x0, y0), str(label), font)
-#         else:
-#             w, h = draw.textsize(str(label), font)
-#             bbox = (x0, y0, w + x0, y0 + h)
-#         # bbox = draw.textbbox((x0, y0), str(label))
-#         draw.rectangle(bbox, fill=color)
-#         draw.text((x0, y0), str(label), fill="white")
-
-#         mask_draw.rectangle([x0, y0, x1, y1], fill=255, width=6)
-
-#     return image_pil, mask
 
 def plot_boxes_to_image(image_pil, tgt, boxes_are_normalized=False):
     H, W = tgt["size"]
@@ -206,3 +166,66 @@ def compute_metrics(all_iou_scores, tp, fp, fn):
     f1        = 2 * precision * recall / (precision + recall) if (precision+recall)>0 else 0.0
     mean_iou  = np.mean(all_iou_scores) if all_iou_scores else 0.0
     return precision, recall, f1, mean_iou
+
+def compute_ap_metrics(all_pred_boxes, all_gt_boxes, iou_thresholds=np.arange(0.5, 1.0, 0.05)):
+    aps = []
+    all_ious = []
+
+    for iou_thr in iou_thresholds:
+        tp = 0
+        fp = 0
+        fn = 0
+
+        for preds, gts in zip(all_pred_boxes, all_gt_boxes):
+            # Convert lists to tensors if needed
+            if not isinstance(preds, torch.Tensor):
+                preds = torch.tensor(preds)
+            if not isinstance(gts, torch.Tensor):
+                gts = torch.tensor(gts)
+
+            if preds.numel() > 0 and gts.numel() > 0:
+                iou_mat, _ = box_iou(preds, gts)
+            else:
+                iou_mat = torch.zeros((len(preds), len(gts)))
+
+            matched_gt = set()
+            for pi in range(iou_mat.shape[0]):
+                if iou_mat.shape[1] == 0:  # No GTs to match
+                    fp += 1
+                    continue
+                    
+                best_gt = int(torch.argmax(iou_mat[pi]))
+                best_iou = float(iou_mat[pi, best_gt])
+                if best_iou >= iou_thr and best_gt not in matched_gt:
+                    tp += 1
+                    all_ious.append(best_iou)
+                    matched_gt.add(best_gt)
+                else:
+                    fp += 1
+            fn += (len(gts) - len(matched_gt))
+
+        precision = tp / (tp + fp) if (tp + fp) > 0 else 0.0
+        aps.append(precision)
+
+    ap50 = aps[0] if len(aps) > 0 else 0.0
+    ap5095 = np.mean(aps) if aps else 0.0
+    mean_iou = np.mean(all_ious) if all_ious else 0.0
+    return ap50, ap5095, mean_iou
+
+
+def prepare_boxes_for_ap(boxes_list):
+    prepared = []
+    for b in boxes_list:
+        if isinstance(b, torch.Tensor):
+            # Already tensor
+            if b.ndim == 1 and b.numel() == 4:
+                b = b.unsqueeze(0)
+        else:
+            if len(b) == 0:
+                b = torch.zeros((0, 4))
+            else:
+                b = torch.tensor(b)
+                if b.ndim == 1 and b.numel() == 4:
+                    b = b.unsqueeze(0)
+        prepared.append(b)
+    return prepared

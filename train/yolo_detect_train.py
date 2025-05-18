@@ -15,7 +15,7 @@ KILL_SWITCH = True
 
 # Load a model
 # TRAIN_MODEL_PATH = "runs/detect/train2/weights/last.pt"
-TRAIN_DATA_PATH = "runs/detect/train/weights/last.pt"
+TRAIN_MODEL_PATH = "runs/detect/train/weights/last.pt"
 model = YOLO(TRAIN_MODEL_PATH)  # load a partially trained model
 
 # Resume training

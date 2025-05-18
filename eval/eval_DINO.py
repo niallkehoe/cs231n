@@ -12,15 +12,21 @@ from groundingdino.models import build_model
 from groundingdino.util.slconfig import SLConfig
 from groundingdino.util.utils import clean_state_dict, get_phrases_from_posmap
 from groundingdino.util.box_ops import box_iou  # returns (iou_matrix, union_matrix)
-from helpers import plot_boxes_to_image, load_yolo_boxes, yolo_to_xyxy, compute_metrics
+from helpers import plot_boxes_to_image, load_yolo_boxes, yolo_to_xyxy, compute_metrics, compute_ap_metrics
 
 # --- Config ---
-HOME = "/home/niall/"
-dino_config  = os.path.join(HOME, "cs231n/config/GroundingDINO_SwinT_OGC.py")
-dino_weights = os.path.join(HOME, "weights/groundingdino_swint_ogc.pth")
+HOME = "/home/niall/cs231n/"
+dino_config  = os.path.join(HOME, "config/GroundingDINO_SwinT_OGC.py")
+dino_weights = os.path.join(HOME, "../weights/groundingdino_swint_ogc.pth")
 
-TEST_IMG_DIR   = HOME + "cs231n/datasets/detection-dataset/test/images"
-TEST_LABEL_DIR = HOME + "cs231n/datasets/detection-dataset/test/labels"
+# TEST_DIR = HOME + "datasets/detection-dataset/valid"
+# TEST_DIR = HOME + "datasets/detection-dataset/test"
+# TEST_DIR = HOME + "eval/input"
+# TEST_IMG_DIR = TEST_DIR + "/images"
+# TEST_LABEL_DIR = TEST_DIR + "/labels"
+
+TEST_IMG_DIR = HOME + "eval/input"
+
 OUTPUT_DIR     = "out/dino/"
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
@@ -137,16 +143,19 @@ def get_grounding_output(model, image, caption, box_threshold, text_threshold=No
 def main(args):
     model = load_model(dino_config, dino_weights)
     metrics = {"tp":0, "fp":0, "fn":0, "ious":[]}
+    # store for AP calculation, requires ranking preds by confidence
+    all_pred_boxes = []
+    all_gt_boxes   = []
     test_files = glob.glob(os.path.join(TEST_IMG_DIR, "*.jpg"))
     print(f"\nNumber of test images: {len(test_files)}")
 
     for i, img_fp in tqdm(enumerate(test_files), total=len(test_files), desc="Processing images"):
         basename = os.path.splitext(os.path.basename(img_fp))[0]
-        lbl_fp   = os.path.join(TEST_LABEL_DIR, basename + ".txt")
+        # lbl_fp   = os.path.join(TEST_LABEL_DIR, basename + ".txt")
 
         pil, img_t = load_image_and_transform(img_fp)
         W, H      = pil.size
-        gt_boxes  = load_yolo_boxes(lbl_fp, W, H, class_id=0)  # only “monitor” class
+        # gt_boxes  = load_yolo_boxes(lbl_fp, W, H, class_id=0)  # only “monitor” class
 
         # run model
         boxes_filt, pred_phrases = get_grounding_output(
@@ -159,50 +168,58 @@ def main(args):
             pred_dict = {
                 "boxes": boxes_filt,
                 "size": [H, W],
-                "labels": pred_phrases
+                "labels": pred_phrases,
             }
-            # print(f"Preds: {pred_dict}")
-            img_with_box = plot_boxes_to_image(pil, pred_dict)[0]
+            print(f"Preds: {pred_dict}")
+            img_with_box = plot_boxes_to_image(pil, pred_dict, boxes_are_normalized=True)[0]
             out_fp = os.path.join(OUTPUT_DIR, f"{basename}_pred.jpg")
             img_with_box.save(out_fp)
             print(f"[verbose] saved {out_fp}")
 
-        # ——— convert filtered grounding boxes to absolute xyxy ———
-        preds = []
-        for b in boxes_filt:
-            cx, cy, w, h = b.tolist()
-            preds.append(yolo_to_xyxy([cx, cy, w, h], W, H))
-        preds = torch.tensor(preds) if preds else torch.zeros((0,4))
+        # convert to absolute xyxy
+    #     preds = [yolo_to_xyxy(b.tolist(), W, H) for b in boxes_filt]
+    #     preds = torch.tensor(preds) if preds else torch.zeros((0, 4))
+    #     gt_boxes = load_yolo_boxes(lbl_fp, W, H, class_id=0)
 
-        # load GT boxes
-        gt_boxes = load_yolo_boxes(lbl_fp, W, H, class_id=0)
+    #     # store for AP calculation
+    #     all_pred_boxes.append(preds)
+    #     all_gt_boxes.append(gt_boxes)
 
-        # ——— compute IoU matrix ———
-        if preds.numel()>0 and gt_boxes.numel()>0:
-            iou_mat, _ = box_iou(preds, gt_boxes)
-        else:
-            iou_mat = torch.zeros((len(preds), len(gt_boxes)))
+    #     # compute IoU matrix
+    #     if preds.numel() > 0 and gt_boxes.numel() > 0:
+    #         iou_mat, _ = box_iou(preds, gt_boxes)
+    #     else:
+    #         iou_mat = torch.zeros((len(preds), len(gt_boxes)))
 
-        # ——— greedy one-to-one matching ———
-        matched_gt = set()
-        for pi in range(iou_mat.shape[0]):
-            best_gt = int(torch.argmax(iou_mat[pi]))
-            best_iou = float(iou_mat[pi, best_gt])
-            if best_iou >= IOU_THR and best_gt not in matched_gt:
-                metrics["tp"] += 1
-                metrics["ious"].append(best_iou)
-                matched_gt.add(best_gt)
-            else:
-                metrics["fp"] += 1
+    #     # greedy one-to-one match for PR/F1 metrics
+    #     matched_gt = set()
+    #     for pi in range(iou_mat.shape[0]):
+    #         if iou_mat.shape[1] == 0:
+    #             # No GT boxes to match with; all preds are false positives
+    #             metrics["fp"] += 1
+    #             continue
+    #         best_gt = int(torch.argmax(iou_mat[pi]))
+    #         best_iou = float(iou_mat[pi, best_gt])
+    #         if best_iou >= IOU_THR and best_gt not in matched_gt:
+    #             metrics["tp"] += 1
+    #             metrics["ious"].append(best_iou)
+    #             matched_gt.add(best_gt)
+    #         else:
+    #             metrics["fp"] += 1
+    #     metrics["fn"] += (len(gt_boxes) - len(matched_gt))
 
-        # any ground‐truth boxes left unmatched are false negatives
-        metrics["fn"] += (len(gt_boxes) - len(matched_gt))
+    #     # if i > 10:
+    #     #     break
 
-        # if i > 50:
-        #     break
+    # # --- Original metrics ---
+    # p, r, f1, mean_iou = compute_metrics(metrics["ious"], metrics["tp"], metrics["fp"], metrics["fn"])
+    # print(f"Precision: {p:.4f}\nRecall:    {r:.4f}\nF1 Score:  {f1:.4f}\nMean IoU:  {mean_iou:.4f}")
 
-    p, r, f1, mean_iou = compute_metrics(metrics["ious"], metrics["tp"], metrics["fp"], metrics["fn"])
-    print(f"Precision: {p:.4f}\nRecall:    {r:.4f}\nF1 Score:  {f1:.4f}\nMean IoU:  {mean_iou:.4f}")
+    # # --- AP metrics ---
+    # ap50, ap5095, mean_iou_ap = compute_ap_metrics(all_pred_boxes, all_gt_boxes)
+    # print(f"\nAP@0.5:    {ap50:.4f}")
+    # print(f"AP@50:95:  {ap5095:.4f}")
+    # print(f"Mean IoU: {mean_iou_ap:.4f}")
 
     
 if __name__ == "__main__":
@@ -213,3 +230,28 @@ if __name__ == "__main__":
     args = parser.parse_args()
     main(args)
 
+
+
+"""
+
+Val: (time: 4m 32s = 272s)
+Precision: 0.7750
+Recall:    0.8424
+F1 Score:  0.8073
+Mean IoU:  0.8319
+
+AP@0.5:    0.7750
+AP@50:95:  0.5677
+Mean IoU: 0.8680
+
+Test:
+Precision: 0.7709
+Recall:    0.8410
+F1 Score:  0.8044
+Mean IoU:  0.8453
+
+AP@0.5:    0.7709
+AP@50:95:  0.5778
+Mean IoU: 0.8759
+
+"""
