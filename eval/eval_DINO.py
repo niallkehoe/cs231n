@@ -21,11 +21,12 @@ dino_weights = os.path.join(HOME, "../weights/groundingdino_swint_ogc.pth")
 
 # TEST_DIR = HOME + "datasets/detection-dataset/valid"
 # TEST_DIR = HOME + "datasets/detection-dataset/test"
-# TEST_DIR = HOME + "eval/input"
-# TEST_IMG_DIR = TEST_DIR + "/images"
-# TEST_LABEL_DIR = TEST_DIR + "/labels"
 
-TEST_IMG_DIR = HOME + "eval/input"
+TEST_DIR = HOME + "eval/input"
+TEST_IMG_DIR = TEST_DIR + "/images"
+TEST_LABEL_DIR = TEST_DIR + "/labels"
+
+# TEST_IMG_DIR = HOME + "eval/input"
 
 OUTPUT_DIR     = "out/dino/"
 os.makedirs(OUTPUT_DIR, exist_ok=True)
@@ -56,23 +57,6 @@ def load_image_and_transform(path):
     img, _ = tf(pil, None)
     return pil, img.to(DEVICE)
 
-
-# def get_grounding_boxes(model, image_tensor, prompt, box_thr, text_thr):
-#     # identical to your get_grounding_output, but returns raw boxes [cx,cy,w,h] in 0–1
-#     prompt = prompt.lower().strip()
-#     if not prompt.endswith("."):
-#         prompt += "."
-#     with torch.no_grad():
-#         out = model(image_tensor[None], captions=[prompt])
-#     logits = out["pred_logits"].sigmoid()[0]  # (nq,256)
-#     boxes  = out["pred_boxes"][0]             # (nq,4)
-#     # filter by box threshold
-#     mask   = logits.max(dim=1)[0] > box_thr
-#     boxes  = boxes[mask].cpu()
-#     logits = logits[mask].cpu()
-#     # filter further by text threshold
-#     keep = (logits > text_thr).any(dim=1)
-#     return boxes[keep]  # tensor [N,4]
 
 def get_grounding_output(model, image, caption, box_threshold, text_threshold=None, with_logits=True, cpu_only=False, token_spans=None):
     assert text_threshold is not None or token_spans is not None, "text_threshould and token_spans should not be None at the same time!"
@@ -151,11 +135,11 @@ def main(args):
 
     for i, img_fp in tqdm(enumerate(test_files), total=len(test_files), desc="Processing images"):
         basename = os.path.splitext(os.path.basename(img_fp))[0]
-        # lbl_fp   = os.path.join(TEST_LABEL_DIR, basename + ".txt")
+        lbl_fp   = os.path.join(TEST_LABEL_DIR, basename + ".txt")
 
         pil, img_t = load_image_and_transform(img_fp)
         W, H      = pil.size
-        # gt_boxes  = load_yolo_boxes(lbl_fp, W, H, class_id=0)  # only “monitor” class
+        gt_boxes  = load_yolo_boxes(lbl_fp, W, H, class_id=0)  # only “monitor” class
 
         # run model
         boxes_filt, pred_phrases = get_grounding_output(
@@ -177,49 +161,49 @@ def main(args):
             print(f"[verbose] saved {out_fp}")
 
         # convert to absolute xyxy
-    #     preds = [yolo_to_xyxy(b.tolist(), W, H) for b in boxes_filt]
-    #     preds = torch.tensor(preds) if preds else torch.zeros((0, 4))
-    #     gt_boxes = load_yolo_boxes(lbl_fp, W, H, class_id=0)
+        preds = [yolo_to_xyxy(b.tolist(), W, H) for b in boxes_filt]
+        preds = torch.tensor(preds) if preds else torch.zeros((0, 4))
+        gt_boxes = load_yolo_boxes(lbl_fp, W, H, class_id=0)
 
-    #     # store for AP calculation
-    #     all_pred_boxes.append(preds)
-    #     all_gt_boxes.append(gt_boxes)
+        # store for AP calculation
+        all_pred_boxes.append(preds)
+        all_gt_boxes.append(gt_boxes)
 
-    #     # compute IoU matrix
-    #     if preds.numel() > 0 and gt_boxes.numel() > 0:
-    #         iou_mat, _ = box_iou(preds, gt_boxes)
-    #     else:
-    #         iou_mat = torch.zeros((len(preds), len(gt_boxes)))
+        # compute IoU matrix
+        if preds.numel() > 0 and gt_boxes.numel() > 0:
+            iou_mat, _ = box_iou(preds, gt_boxes)
+        else:
+            iou_mat = torch.zeros((len(preds), len(gt_boxes)))
 
-    #     # greedy one-to-one match for PR/F1 metrics
-    #     matched_gt = set()
-    #     for pi in range(iou_mat.shape[0]):
-    #         if iou_mat.shape[1] == 0:
-    #             # No GT boxes to match with; all preds are false positives
-    #             metrics["fp"] += 1
-    #             continue
-    #         best_gt = int(torch.argmax(iou_mat[pi]))
-    #         best_iou = float(iou_mat[pi, best_gt])
-    #         if best_iou >= IOU_THR and best_gt not in matched_gt:
-    #             metrics["tp"] += 1
-    #             metrics["ious"].append(best_iou)
-    #             matched_gt.add(best_gt)
-    #         else:
-    #             metrics["fp"] += 1
-    #     metrics["fn"] += (len(gt_boxes) - len(matched_gt))
+        # greedy one-to-one match for PR/F1 metrics
+        matched_gt = set()
+        for pi in range(iou_mat.shape[0]):
+            if iou_mat.shape[1] == 0:
+                # No GT boxes to match with; all preds are false positives
+                metrics["fp"] += 1
+                continue
+            best_gt = int(torch.argmax(iou_mat[pi]))
+            best_iou = float(iou_mat[pi, best_gt])
+            if best_iou >= IOU_THR and best_gt not in matched_gt:
+                metrics["tp"] += 1
+                metrics["ious"].append(best_iou)
+                matched_gt.add(best_gt)
+            else:
+                metrics["fp"] += 1
+        metrics["fn"] += (len(gt_boxes) - len(matched_gt))
 
-    #     # if i > 10:
-    #     #     break
+        # if i > 10:
+        #     break
 
-    # # --- Original metrics ---
-    # p, r, f1, mean_iou = compute_metrics(metrics["ious"], metrics["tp"], metrics["fp"], metrics["fn"])
-    # print(f"Precision: {p:.4f}\nRecall:    {r:.4f}\nF1 Score:  {f1:.4f}\nMean IoU:  {mean_iou:.4f}")
+    # --- Original metrics ---
+    p, r, f1, mean_iou = compute_metrics(metrics["ious"], metrics["tp"], metrics["fp"], metrics["fn"])
+    print(f"Precision: {p:.4f}\nRecall:    {r:.4f}\nF1 Score:  {f1:.4f}\nMean IoU:  {mean_iou:.4f}")
 
-    # # --- AP metrics ---
-    # ap50, ap5095, mean_iou_ap = compute_ap_metrics(all_pred_boxes, all_gt_boxes)
-    # print(f"\nAP@0.5:    {ap50:.4f}")
-    # print(f"AP@50:95:  {ap5095:.4f}")
-    # print(f"Mean IoU: {mean_iou_ap:.4f}")
+    # --- AP metrics ---
+    ap50, ap5095, mean_iou_ap = compute_ap_metrics(all_pred_boxes, all_gt_boxes)
+    print(f"\nAP@0.5:    {ap50:.4f}")
+    print(f"AP@50:95:  {ap5095:.4f}")
+    print(f"Mean IoU: {mean_iou_ap:.4f}")
 
     
 if __name__ == "__main__":
