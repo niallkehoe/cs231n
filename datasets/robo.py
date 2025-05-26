@@ -25,3 +25,7 @@ rf = Roboflow(api_key="cUuR6Zpj8mZ1ZRFErnYo")
 # version = project.version(1)
 # dataset = version.download("yolov11")
                 
+# 5. screens-segmentation: https://universe.roboflow.com/myworkspace-mvnb3/screens-segmentation
+# project = rf.workspace("myworkspace-mvnb3").project("screens-segmentation")
+# version = project.version(1)
+# dataset = version.download("yolov11")
