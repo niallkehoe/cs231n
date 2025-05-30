@@ -50,9 +50,7 @@ datasets = [
     'screen-1',
 ]
 
-
-# Initialize counters for each split
-split_stats = {
+dataset_stats = {
     'train': {'images': 0, 'instances': 0},
     'valid': {'images': 0, 'instances': 0},
     'test': {'images': 0, 'instances': 0}
@@ -60,7 +58,8 @@ split_stats = {
 
 for dataset in datasets:
     print(f"\nProcessing dataset: {dataset}")
-    dataset_stats = {
+    # Initialize counters for each split
+    split_stats = {
         'train': {'images': 0, 'instances': 0},
         'valid': {'images': 0, 'instances': 0},
         'test': {'images': 0, 'instances': 0}
@@ -89,10 +88,10 @@ for dataset in datasets:
                 f.write('\n'.join(new_lines))
             
             # Update statistics
-            dataset_stats[split]['images'] += 1
-            dataset_stats[split]['instances'] += len(new_lines)
             split_stats[split]['images'] += 1
             split_stats[split]['instances'] += len(new_lines)
+            dataset_stats[split]['images'] += 1
+            dataset_stats[split]['instances'] += len(new_lines)
         
     # Print dataset statistics
     print("\nDataset Statistics:")
@@ -109,9 +108,9 @@ print("-"*100)
 print("\nFinal Dataset Statistics:")
 for split in ['train', 'valid', 'test']:
     print(f"\n{split.capitalize()} Split:")
-    print(f"  Total Images: {split_stats[split]['images']}")
-    print(f"  Total Instances: {split_stats[split]['instances']}")
-    print(f"  Average Instances per Image: {split_stats[split]['instances']/split_stats[split]['images']:.2f}")
+    print(f"  Total Images: {dataset_stats[split]['images']}")
+    print(f"  Total Instances: {dataset_stats[split]['instances']}")
+    print(f"  Average Instances per Image: {dataset_stats[split]['instances']/dataset_stats[split]['images']:.2f}")
 
     """
 
