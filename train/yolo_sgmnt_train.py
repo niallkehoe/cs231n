@@ -2,7 +2,7 @@ from ultralytics import YOLO
 import os
 
 # kill switch to kill the gcp instance after training
-KILL_SWITCH = True
+KILL_SWITCH = False
 
 # ----------- NEW TRAINING -----------
 TRAIN_DATA_PATH = "../datasets/segmentation-dataset/data.yaml"

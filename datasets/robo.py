@@ -32,7 +32,7 @@ rf = Roboflow(api_key="cUuR6Zpj8mZ1ZRFErnYo")
                 
 # 6. screens-segmentation: https://universe.roboflow.com/myworkspace-mvnb3/screens-segmentation
 # project = rf.workspace("myworkspace-mvnb3").project("screens-segmentation")
-# version = project.version(1)
+# version = project.version(5)
 # dataset = version.download("yolov11")
 
 # 7. laptop-screen-detection: https://universe.roboflow.com/laptop-screen-detection/laptop-screen-detection-lohtq
@@ -43,5 +43,5 @@ rf = Roboflow(api_key="cUuR6Zpj8mZ1ZRFErnYo")
 # 8. laptop-screen-detection-vivek: https://universe.roboflow.com/vivek-kumar-kirw1/laptop-screen-detection
 # project = rf.workspace("vivek-kumar-kirw1").project("laptop-screen-detection")
 # version = project.version(1)
-# dataset = version.download("yolov11")
+# dataset = version.download("yolov11", "laptop-screen-detection-vivek-1")
 
