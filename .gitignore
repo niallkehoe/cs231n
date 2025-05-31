@@ -4,3 +4,4 @@ datasets/*
 # But not Python files
 !datasets/**/*.py
 pipeline/inputs/*.mp4
+pipeline/out/**/*.mp4

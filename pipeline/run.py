@@ -35,7 +35,7 @@ def show_delta(load_fn, name="model"):
     print(f"{name:15s}: +{gpu_mb()-start:8.1f} MB parameters")
     return obj                           # keep it or del obj to free
 
-CUTIE_AVAILABLE = False
+# CUTIE_AVAILABLE = False
 class YOLOCutiePipeline:
     def __init__(self, detection_model_path, segmentation_model_path, cutie_model_path=None, confidence_threshold=0.5, show_boxes=False, low_mem=False):
         """
@@ -158,7 +158,7 @@ class YOLOCutiePipeline:
         try:
             self.cutie_processor = InferenceCore(self.cutie_model,
                                                 cfg=self.cutie_model.cfg)
-            self.cutie_processor.max_internal_size = 480    # tweak if you like
+            self.cutie_processor.max_internal_size = 240    # tweak if you like
 
             # 1️⃣  build an instance-label mask (H₀×W₀, int)
             combined_mask = self._prepare_masks_for_cutie(masks).squeeze(0).cpu().numpy()
@@ -178,9 +178,9 @@ class YOLOCutiePipeline:
             #     if you ever change padding logic keep this in sync)
             combined_mask = torch.from_numpy(combined_mask).to(frame_t.device)
 
-            print("[DEBUG] frame_t:", frame_t.dtype, frame_t.device,
-                "| model:", next(self.cutie_model.parameters()).dtype,
-                next(self.cutie_model.parameters()).device)
+            # print("[DEBUG] frame_t:", frame_t.dtype, frame_t.device,
+            #     "| model:", next(self.cutie_model.parameters()).dtype,
+            #     next(self.cutie_model.parameters()).device)
 
             # 5️⃣  seed Cutie’s memory bank
             self.cutie_processor.step(frame_t,
