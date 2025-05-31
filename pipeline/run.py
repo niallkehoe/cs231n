@@ -6,21 +6,38 @@ from pathlib import Path
 import argparse
 import torch
 import traceback
+import sys
+import torchvision.transforms.functional as F
+import torch.nn.functional as TF           # add along with the other imports
 
 try:
     from cutie.model.cutie import CUTIE
     from cutie.inference.inference_core import InferenceCore
+    from cutie.utils.get_default_model import get_default_model
     CUTIE_AVAILABLE = True
+    print("Cutie available")
 except ImportError as e:
     print(e)
     traceback.print_exc()
     print("Warning: Cutie not available. Install Cutie for tracking functionality.")
     CUTIE_AVAILABLE = False
 
-exit()
+import gc, contextlib
 
+def gpu_mb():
+    return torch.cuda.memory_allocated() / 1024**2
+
+def show_delta(load_fn, name="model"):
+    torch.cuda.empty_cache(); gc.collect()
+    start = gpu_mb()
+    obj = load_fn().to("cuda")          # ← load_fn returns the model
+    torch.cuda.synchronize()
+    print(f"{name:15s}: +{gpu_mb()-start:8.1f} MB parameters")
+    return obj                           # keep it or del obj to free
+
+CUTIE_AVAILABLE = False
 class YOLOCutiePipeline:
-    def __init__(self, detection_model_path, segmentation_model_path, cutie_model_path=None, confidence_threshold=0.5):
+    def __init__(self, detection_model_path, segmentation_model_path, cutie_model_path=None, confidence_threshold=0.5, show_boxes=False, low_mem=False):
         """
         Initialize the YOLO-Cutie hybrid pipeline.
         
@@ -30,60 +47,176 @@ class YOLOCutiePipeline:
             cutie_model_path (str): Path to the Cutie model (optional)
             confidence_threshold (float): Threshold for detection confidence
         """
-        self.detection_model = YOLO(detection_model_path)
-        self.segmentation_model = YOLO(segmentation_model_path)
+        self.detection_model = show_delta(lambda: YOLO(detection_model_path), "detection")
+        self.segmentation_model = show_delta(lambda: YOLO(segmentation_model_path), "segmentation")
         self.confidence_threshold = confidence_threshold
+        self.show_boxes = show_boxes
+        self.low_mem = low_mem
         
         # Cutie tracking setup
         self.cutie_model = None
         self.cutie_processor = None
-        if CUTIE_AVAILABLE and cutie_model_path:
+        if CUTIE_AVAILABLE:
+            # self.cutie_model = self._load_cutie_model(cutie_model_path)
+            # if self.low_mem:
+            #     self.cutie_model = self.cutie_model.half()
+
             self.cutie_model = self._load_cutie_model(cutie_model_path)
+            if self.low_mem and self.cutie_model is not None:
+                self.cutie_model = self.cutie_model.half()  # FP16 weights
+                self.cutie_model.eval()                     # inference-only
         
         # Tracking state
         self.is_tracking = False
         self.last_instance_count = 0
         self.tracking_masks = None
         self.frame_idx = 0
-        
+
     def _load_cutie_model(self, model_path):
         """Load and initialize the Cutie model."""
         try:
             # Adjust this based on your Cutie model loading requirements
-            model = CUTIE.from_pretrained(model_path)
-            model.eval()
-            return model
+            # model = CUTIE.from_pretrained(model_path)
+            # model.eval()
+            # return model
+            cutie = show_delta(lambda: get_default_model(), "Cutie")
+            return cutie
         except Exception as e:
             print(f"Error loading Cutie model: {e}")
             return None
     
+    def _draw_detection_boxes(self, frame, yolo_results):
+        """Overlay YOLO bounding boxes (in-place)."""
+        for r in yolo_results:
+            if r.boxes is None:
+                continue
+            for b in r.boxes:
+                x1, y1, x2, y2 = map(int, b.xyxy[0])
+                conf = float(b.conf[0])
+                cv2.rectangle(frame, (x1, y1), (x2, y2), (255, 255, 0), 2)
+                cv2.putText(frame, f"{conf:.2f}", (x1, y1 - 6),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 0), 1)
+
+
+    # helper: centralise resize + dtype choice
+    # def _cv2_to_tensor(self, frame_bgr):
+    #     # ↓ optional resize for 720-long-side
+    #     if self.low_mem:
+    #         h, w = frame_bgr.shape[:2]
+    #         scale = 720.0 / max(h, w)
+    #         if scale < 1.0:
+    #             frame_bgr = cv2.resize(frame_bgr,
+    #                                 (int(w * scale), int(h * scale)),
+    #                                 interpolation=cv2.INTER_AREA)
+
+    #     # ↓ pad H, W to multiples of 32
+    #     h, w = frame_bgr.shape[:2]
+    #     pad_h, pad_w = (-h) % 32, (-w) % 32
+    #     if pad_h or pad_w:
+    #         frame_bgr = cv2.copyMakeBorder(frame_bgr, 0, pad_h, 0, pad_w,
+    #                                     cv2.BORDER_CONSTANT, value=0)
+
+    #     # ↓ BGR→RGB → tensor (0-1) → send to same device *and* dtype as model
+    #     frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+    #     tensor = F.to_tensor(frame_rgb)                          # FP32 here
+
+    #     if self.cutie_model is not None:                         # always true in tracking
+    #         p = next(self.cutie_model.parameters())
+    #         tensor = tensor.to(device=p.device, dtype=p.dtype)   # ← key line
+
+    #     return tensor
+    def _cv2_to_tensor(self, frame_bgr):
+        # optional low‑mem resize (long side ≤ 720 px)
+        if self.low_mem:
+            h, w = frame_bgr.shape[:2]
+            scale = 720.0 / max(h, w)
+            if scale < 1.0:
+                frame_bgr = cv2.resize(
+                    frame_bgr, (int(w * scale), int(h * scale)),
+                    interpolation=cv2.INTER_AREA)
+
+        # pad H, W to multiples of 32 (Cutie & YOLO assumption)
+
+        frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+        tensor = F.to_tensor(frame_rgb)                 # FP32
+
+        # ↓↓↓  add THIS two-liner  ↓↓↓
+        if self.low_mem:                                # --low_mem implies FP16
+            tensor = tensor.half()
+        return tensor.to(self.cutie_model.device)
+
+
+
+
+    # ---------------------------------------------------------------------------
+
     def _initialize_cutie_tracking(self, frame, masks):
-        """Initialize Cutie tracking with the given frame and masks."""
-        if not CUTIE_AVAILABLE or self.cutie_model is None:
+        """Bootstrap Cutie on the first detection frame."""
+        if not (CUTIE_AVAILABLE and self.cutie_model):
             return False
-            
+
         try:
-            # Initialize the inference core
-            self.cutie_processor = InferenceCore(
-                model=self.cutie_model,
-                config=None  # Add your config if needed
-            )
-            
-            # Convert masks to the format expected by Cutie
-            # This may need adjustment based on your Cutie version
-            mask_tensor = self._prepare_masks_for_cutie(masks)
-            
-            # Initialize tracking
-            self.cutie_processor.set_image(frame)
-            self.cutie_processor.set_mask(mask_tensor)
-            
+            self.cutie_processor = InferenceCore(self.cutie_model,
+                                                cfg=self.cutie_model.cfg)
+            self.cutie_processor.max_internal_size = 480    # tweak if you like
+
+            # 1️⃣  build an instance-label mask (H₀×W₀, int)
+            combined_mask = self._prepare_masks_for_cutie(masks).squeeze(0).cpu().numpy()
+            objects       = np.unique(combined_mask)
+            objects       = objects[objects > 0].tolist()
+
+            # 2️⃣  make the frame tensor – this already handles scale/pad
+            frame_t       = self._cv2_to_tensor(frame)           # C×H×W
+            H, W          = frame_t.shape[-2:]                   # 416 × 736 in low-mem
+
+            # 3️⃣  resize mask → (H×W) w/ nearest-neighbour to keep IDs intact
+            combined_mask = cv2.resize(combined_mask,
+                                    (W, H),
+                                    interpolation=cv2.INTER_NEAREST)
+
+            # 4️⃣  pad mask exactly like the image (it is already correct in W/H but
+            #     if you ever change padding logic keep this in sync)
+            combined_mask = torch.from_numpy(combined_mask).to(frame_t.device)
+
+            print("[DEBUG] frame_t:", frame_t.dtype, frame_t.device,
+                "| model:", next(self.cutie_model.parameters()).dtype,
+                next(self.cutie_model.parameters()).device)
+
+            # 5️⃣  seed Cutie’s memory bank
+            self.cutie_processor.step(frame_t,
+                                    combined_mask,
+                                    objects=objects)
+
+
             self.is_tracking = True
             self.frame_idx = 0
+            self.last_instance_count = len(objects)
             return True
-            
-        except Exception as e:
-            print(f"Error initializing Cutie tracking: {e}")
+
+        except Exception:
+            traceback.print_exc()
+            print("[Cutie] failed to initialise — falling back to detection mode")
             return False
+
+
+    def _track_frame(self, frame):
+        """Track an already initialised sequence."""
+        if not (self.is_tracking and CUTIE_AVAILABLE and self.cutie_processor):
+            return None, 0
+
+        try:
+            frame_t = self._cv2_to_tensor(frame)
+            with torch.inference_mode():                          # saves VRAM
+                output_prob = self.cutie_processor.step(frame_t)  # 🌟 one‑liner    
+                mask_int   = self.cutie_processor.output_prob_to_mask(output_prob)
+                masks, n   = self._process_cutie_output(mask_int)
+                self.frame_idx += 1
+                return masks, n
+
+        except Exception:
+            traceback.print_exc()
+            self.is_tracking = False
+            return None, 0
     
     def _prepare_masks_for_cutie(self, yolo_masks):
         """Convert YOLO segmentation masks to Cutie format."""
@@ -99,27 +232,17 @@ class YOLOCutiePipeline:
             
         return torch.from_numpy(combined_mask).unsqueeze(0)
     
-    def _track_frame(self, frame):
-        """Track objects in the current frame using Cutie."""
-        if not self.is_tracking or not CUTIE_AVAILABLE or self.cutie_processor is None:
-            return None, 0
-            
-        try:
-            # Run tracking
-            self.cutie_processor.set_image(frame)
-            mask_pred = self.cutie_processor.step()
-            
-            # Convert prediction back to individual masks
-            masks, instance_count = self._process_cutie_output(mask_pred)
-            
-            self.frame_idx += 1
-            return masks, instance_count
-            
-        except Exception as e:
-            print(f"Error during tracking: {e}")
-            self.is_tracking = False
-            return None, 0
-    
+    def _reset_cutie(self):
+        if self.cutie_processor is not None:
+            if hasattr(self.cutie_processor, "clear_memory"):
+                self.cutie_processor.clear_memory()  # drop feature bank
+            del self.cutie_processor
+            torch.cuda.empty_cache()
+        self.cutie_processor = None
+        self.is_tracking = False
+        self.last_instance_count = 0
+
+
     def _process_cutie_output(self, cutie_mask):
         """Process Cutie output mask and count instances."""
         if cutie_mask is None:
@@ -260,6 +383,9 @@ class YOLOCutiePipeline:
                 current_confidence = 0.0
                 source_type = "none"
                 display_frame = frame.copy()  # Frame to write to video
+
+                if self.show_boxes:
+                    self._draw_detection_boxes(display_frame, detection_results)
                 
                 if not self.is_tracking:
                     # Detection mode: Look for objects to start tracking
@@ -298,6 +424,7 @@ class YOLOCutiePipeline:
                         print(f"Frame {frame_count}: All tracks lost, switching to detection mode")
                         self.is_tracking = False
                         self.last_instance_count = 0
+                        self._reset_cutie()
                         
                     elif instance_count != self.last_instance_count:
                         # Instance count changed - re-run segmentation and restart tracking
@@ -345,9 +472,10 @@ class YOLOCutiePipeline:
                     if display_frame.dtype != np.uint8:
                         display_frame = display_frame.astype(np.uint8)
                     
-                    success = video_writer.write(display_frame)
-                    if not success and frame_count == 1:
-                        print("Warning: Failed to write first frame. Video may be corrupted.")
+                    # success = video_writer.write(display_frame)
+                    # if not success and frame_count == 1:
+                    #     print("Warning: Failed to write first frame. Video may be corrupted.")
+                    video_writer.write(display_frame)
                 
                 # Save individual frames only if save_all_frames is True
                 if save_all_frames and segmented_image is not None:
@@ -488,7 +616,13 @@ class YOLOCutiePipeline:
                    font, font_scale, color, thickness)
         
         # Mode and source
-        mode = "TRACKING" if source_type == "tracking" else "DETECTION"
+        # mode = "TRACKING" if source_type == "tracking" else "DETECTION"
+        mode = {
+            "tracking":          "TRACKING",
+            "detection+segmentation": "DETECTION",
+            "re-segmentation":   "RE-SEGMENT"
+        }.get(source_type, "DETECTION")
+
         mode_color = (0, 255, 0) if source_type == "tracking" else (0, 255, 255)
         cv2.putText(overlay_frame, f"Mode: {mode}", (20, 55), 
                    font, font_scale, mode_color, thickness)
@@ -528,6 +662,10 @@ def main():
     parser.add_argument('--threshold', type=float, default=0.5, help='Detection confidence threshold')
     parser.add_argument('--save_all_frames', action='store_true', default=False, help='Save all frames including tracked ones')
     parser.add_argument('--output_video', action='store_true', default=True, help='Generate output video')
+    parser.add_argument('--show_boxes', action='store_true', help='Draw YOLO detection boxes (default: off)')# CLI
+    parser.add_argument('--low_mem', action='store_true',
+                        help='Run Cutie in half-precision at 720 p (uses <8 GB VRAM)')
+
     
     args = parser.parse_args()
     
@@ -536,7 +674,9 @@ def main():
         detection_model_path=args.detection_model,
         segmentation_model_path=args.segmentation_model,
         cutie_model_path=args.cutie_model,
-        confidence_threshold=args.threshold
+        confidence_threshold=args.threshold,
+        show_boxes=args.show_boxes,
+        low_mem=args.low_mem
     )
     
     # Process video
@@ -586,6 +726,13 @@ saved_images = pipeline.process_video(
 
 python run.py --detection_model ../train/runs/detect/medium/weights/best.pt --segmentation_model ../train/runs/segment/initial/weights/best.pt --video inputs/bloomberg.mp4 --threshold 0.5 --output_dir out/bloomberg --save_all_frames
 
-python run.py --detection_model ../train/runs/detect/medium/weights/best.pt --segmentation_model ../train/runs/segment/initial/weights/best.pt --video inputs/bloomberg.mp4 --threshold 0.5 --output_dir out/bloomberg
+# Cutie
+python run.py --detection_model ../train/runs/detect/medium/weights/best.pt \
+            --segmentation_model ../train/runs/segment/initial/weights/best.pt \
+            --cutie_model ../../Cutie/weights/cutie-base-mega.pth \
+            --video inputs/bloomberg.mp4 \
+            --threshold 0.3 \
+            --output_dir out/bloomberg \
+            --low_mem
 
 """
