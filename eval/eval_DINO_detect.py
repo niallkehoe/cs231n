@@ -123,7 +123,6 @@ def get_grounding_output(model, image, caption, box_threshold, text_threshold=No
     return boxes_filt, pred_phrases
 
 
-
 def main(args):
     model = load_model(dino_config, dino_weights)
     metrics = {"tp":0, "fp":0, "fn":0, "ious":[]}

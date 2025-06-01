@@ -90,7 +90,7 @@ if __name__ == "__main__":
 
 """
 
-Val: (time: 20s)
+Val (158 examples): (time: 02:17)
 python eval_YOLO_sgmnt.py \
     --model_path ../train/runs/segment/medium/weights/best.pt \
     --test_dir ../datasets/segmentation-dataset/valid \
@@ -104,7 +104,7 @@ Dice Score: 0.7666
 AP@0.5: 0.6926
 AP@0.5:0.95: 0.5123
 
-Test:
+Test (81 examples):
 python eval_YOLO_sgmnt.py \
     --model_path ../train/runs/segment/medium/weights/best.pt \
     --test_dir ../datasets/segmentation-dataset/test \
