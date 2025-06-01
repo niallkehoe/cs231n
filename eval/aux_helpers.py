@@ -163,9 +163,25 @@ def compute_segmentation_metrics(preds: List[np.ndarray], gts: List[np.ndarray],
         ap50_95                 # AP@0.5:0.95
     )
 
+# def plot_segmentation_to_image(img, mask):
+#     """Plot segmentation mask overlay on image."""
+#     overlay = Image.fromarray((mask * 255).astype(np.uint8)).convert("L")
+#     red = Image.new("RGB", img.size, (255, 0, 0))
+#     img.paste(red, mask=overlay)
+#     return img
+
 def plot_segmentation_to_image(img, mask):
     """Plot segmentation mask overlay on image."""
+    # 1) Convert mask to a PIL “L” image (values 0–255)
     overlay = Image.fromarray((mask * 255).astype(np.uint8)).convert("L")
+
+    # 2) If overlay size ≠ img size, resize to match (use NEAREST to keep hard edges)
+    if overlay.size != img.size:
+        overlay = overlay.resize(img.size, resample=Image.NEAREST)
+
+    # 3) Create a red image of the same size
     red = Image.new("RGB", img.size, (255, 0, 0))
+
+    # 4) Paste the red over img, using overlay as the mask
     img.paste(red, mask=overlay)
     return img

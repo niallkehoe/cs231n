@@ -213,6 +213,7 @@ if __name__ == "__main__":
 
 
 """
+Detection (262 examples): (time: 5m 13s = 313s)
 python eval_DINO_sgmnt.py \
     --test_dir ../datasets/segmentation-dataset/valid \
     --prompt "screen" \
@@ -220,27 +221,27 @@ python eval_DINO_sgmnt.py \
     --box_threshold 0.3 \
     --text_threshold 0.25
   
-Precision      : 0.8876
-Recall         : 0.7760
-F1 Score       : 0.7998
-Mean IoU       : 0.7222
-Dice Score     : 0.7998
-AP@0.5         : 0.6738
-AP@0.5:0.95    : 0.4985
+Precision      : 0.8680
+Recall         : 0.8211
+F1 Score       : 0.8198
+Mean IoU       : 0.7541
+Dice Score     : 0.8198
+AP@0.5         : 0.7721
+AP@0.5:0.95    : 0.5850
 
-Test (81 examples):
+Test (134 examples):
 python eval_DINO_sgmnt.py \
     --test_dir ../datasets/segmentation-dataset/test \
     --prompt "screen" \
     --output_dir out/dino/sgmnt \
     --box_threshold 0.3 \
-    --text_threshold 0.25 \
+    --text_threshold 0.25
 
-Precision      : 0.8418
-Recall         : 0.7839
-F1 Score       : 0.7810
-Mean IoU       : 0.6841
-Dice Score     : 0.7810
-AP@0.5         : 0.6637
-AP@0.5:0.95    : 0.4199
+Precision      : 0.8236
+Recall         : 0.8002
+F1 Score       : 0.7903
+Mean IoU       : 0.7091
+Dice Score     : 0.7903
+AP@0.5         : 0.7640
+AP@0.5:0.95    : 0.4914
 """

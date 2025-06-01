@@ -5,9 +5,10 @@ from tqdm import tqdm
 
 datasets = [
     'screen-1',
-    'screens-segmentation-5',
+    'screens-segmentation-7',
     'laptop-screen-detection-1',
     'laptop-screen-detection-vivek-1',
+    'laptop-1'
 ]
 splits = ['train', 'valid', 'test']
 dataset_stats = {split: {'images': 0, 'instances': 0} for split in splits}

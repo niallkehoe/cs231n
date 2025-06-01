@@ -791,37 +791,3 @@ def main():
 if __name__ == "__main__":
     main()
 
-
-# Example usage:
-"""
-# Initialize the hybrid pipeline
-pipeline = YOLOCutiePipeline(
-    detection_model_path="path/to/detection_model.pt",
-    segmentation_model_path="path/to/segmentation_model.pt",
-    cutie_model_path="path/to/cutie_model.pth",
-    confidence_threshold=0.7
-)
-
-# Process a video with tracking
-saved_images = pipeline.process_video(
-    video_path="input_video.mp4",
-    output_dir="hybrid_outputs",
-    save_original=True,
-    save_all_frames=True  # Now frames will be saved to hybrid_outputs/frames/
-)
-"""
-
-"""
-
-python run.py --detection_model ../train/runs/detect/medium/weights/best.pt --segmentation_model ../train/runs/segment/initial/weights/best.pt --video inputs/bloomberg.mp4 --threshold 0.5 --output_dir out/bloomberg --save_all_frames
-
-# Cutie
-python run.py --detection_model ../train/runs/detect/medium/weights/best.pt \
-            --segmentation_model ../train/runs/segment/initial/weights/best.pt \
-            --cutie_model ../../Cutie/weights/cutie-base-mega.pth \
-            --video inputs/bloomberg.mp4 \
-            --threshold 0.3 \
-            --output_dir out/bloomberg \
-            --low_mem
-
-"""

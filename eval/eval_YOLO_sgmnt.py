@@ -6,7 +6,12 @@ from PIL import Image
 from tqdm import tqdm
 from ultralytics import YOLO
 import numpy as np
-from helpers import load_segmentation_mask, compute_segmentation_metrics, plot_segmentation_to_image
+# from helpers import load_segmentation_mask, compute_segmentation_metrics, plot_segmentation_to_image
+from aux_helpers import (
+    load_segmentation_mask,
+    compute_segmentation_metrics,
+    plot_segmentation_to_image
+)
 
 IOU_THRESHOLDS = np.arange(0.5, 1.0, 0.05)
 
@@ -90,31 +95,37 @@ if __name__ == "__main__":
 
 """
 
-Val (158 examples): (time: 02:17)
+Val (262 examples): (time: 40)
 python eval_YOLO_sgmnt.py \
-    --model_path ../train/runs/segment/medium/weights/best.pt \
+    --model_path ../train/runs/segment/large/weights/best.pt \
     --test_dir ../datasets/segmentation-dataset/valid \
     --output_dir out/yolo/sgmnt
 
-Precision: 0.7493
-Recall: 0.8532
-F1 Score: 0.7666
-Mean IoU: 0.6997
-Dice Score: 0.7666
-AP@0.5: 0.6926
-AP@0.5:0.95: 0.5123
+Precision: 0.7301
+Recall: 0.7915
+F1 Score: 0.7395
+Mean IoU: 0.6866
+Dice Score: 0.7395
+AP@0.5: 0.7774
+AP@0.5:0.95: 0.5995
 
-Test (81 examples):
+Test (134 examples):
 python eval_YOLO_sgmnt.py \
-    --model_path ../train/runs/segment/medium/weights/best.pt \
+    --model_path ../train/runs/segment/large/weights/best.pt \
     --test_dir ../datasets/segmentation-dataset/test \
     --output_dir out/yolo/sgmnt
 
-Precision: 0.7630
-Recall: 0.8783
-F1 Score: 0.7906
-Mean IoU: 0.7263
-Dice Score: 0.7906
-AP@0.5: 0.6917
-AP@0.5:0.95: 0.5576
+Precision: 0.7572
+Recall: 0.8531
+F1 Score: 0.7781
+Mean IoU: 0.7220
+Dice Score: 0.7781
+AP@0.5: 0.7732
+AP@0.5:0.95: 0.6087
+
+python eval_YOLO_sgmnt.py \
+    --model_path ../train/runs/segment/large/weights/best.pt \
+    --test_dir input \
+    --output_dir out/yolo/sgmnt
+    --verbose
 """

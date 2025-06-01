@@ -98,32 +98,6 @@ class YOLOCutiePipeline:
                             cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 0), 1)
 
 
-    # helper: centralise resize + dtype choice
-    # def _cv2_to_tensor(self, frame_bgr):
-    #     # ↓ optional resize for 720-long-side
-    #     if self.low_mem:
-    #         h, w = frame_bgr.shape[:2]
-    #         scale = 720.0 / max(h, w)
-    #         if scale < 1.0:
-    #             frame_bgr = cv2.resize(frame_bgr,
-    #                                 (int(w * scale), int(h * scale)),
-    #                                 interpolation=cv2.INTER_AREA)
-
-    #     # ↓ pad H, W to multiples of 32
-    #     h, w = frame_bgr.shape[:2]
-    #     pad_h, pad_w = (-h) % 32, (-w) % 32
-    #     if pad_h or pad_w:
-    #         frame_bgr = cv2.copyMakeBorder(frame_bgr, 0, pad_h, 0, pad_w,
-    #                                     cv2.BORDER_CONSTANT, value=0)
-
-    #     # ↓ BGR→RGB → tensor (0-1) → send to same device *and* dtype as model
-    #     frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
-    #     tensor = F.to_tensor(frame_rgb)                          # FP32 here
-
-    #     if self.cutie_model is not None:                         # always true in tracking
-    #         p = next(self.cutie_model.parameters())
-    #         tensor = tensor.to(device=p.device, dtype=p.dtype)   # ← key line
-
     #     return tensor
     def _cv2_to_tensor(self, frame_bgr):
         # optional low‑mem resize (long side ≤ 720 px)
@@ -146,8 +120,6 @@ class YOLOCutiePipeline:
         return tensor.to(self.cutie_model.device)
 
 
-
-
     # ---------------------------------------------------------------------------
 
     def _initialize_cutie_tracking(self, frame, masks):
@@ -160,21 +132,21 @@ class YOLOCutiePipeline:
                                                 cfg=self.cutie_model.cfg)
             self.cutie_processor.max_internal_size = 240    # tweak if you like
 
-            # 1️⃣  build an instance-label mask (H₀×W₀, int)
+            # 1.  build an instance-label mask (H₀×W₀, int)
             combined_mask = self._prepare_masks_for_cutie(masks).squeeze(0).cpu().numpy()
             objects       = np.unique(combined_mask)
             objects       = objects[objects > 0].tolist()
 
-            # 2️⃣  make the frame tensor – this already handles scale/pad
+            # 2.  make the frame tensor – this already handles scale/pad
             frame_t       = self._cv2_to_tensor(frame)           # C×H×W
             H, W          = frame_t.shape[-2:]                   # 416 × 736 in low-mem
 
-            # 3️⃣  resize mask → (H×W) w/ nearest-neighbour to keep IDs intact
+            # 3.  resize mask → (H×W) w/ nearest-neighbour to keep IDs intact
             combined_mask = cv2.resize(combined_mask,
                                     (W, H),
                                     interpolation=cv2.INTER_NEAREST)
 
-            # 4️⃣  pad mask exactly like the image (it is already correct in W/H but
+            # 4.  pad mask exactly like the image (it is already correct in W/H but
             #     if you ever change padding logic keep this in sync)
             combined_mask = torch.from_numpy(combined_mask).to(frame_t.device)
 
@@ -182,7 +154,7 @@ class YOLOCutiePipeline:
             #     "| model:", next(self.cutie_model.parameters()).dtype,
             #     next(self.cutie_model.parameters()).device)
 
-            # 5️⃣  seed Cutie’s memory bank
+            # 5.  seed Cutie’s memory bank
             self.cutie_processor.step(frame_t,
                                     combined_mask,
                                     objects=objects)
@@ -724,15 +696,22 @@ saved_images = pipeline.process_video(
 
 """
 
-python run.py --detection_model ../train/runs/detect/medium/weights/best.pt --segmentation_model ../train/runs/segment/initial/weights/best.pt --video inputs/bloomberg.mp4 --threshold 0.5 --output_dir out/bloomberg --save_all_frames
+python run.py --detection_model ../train/runs/detect/medium/weights/best.pt --segmentation_model ../train/runs/segment/large/weights/best.pt --video inputs/bloomberg.mp4 --threshold 0.5 --output_dir out/bloomberg --save_all_frames
 
 # Cutie
 python run.py --detection_model ../train/runs/detect/medium/weights/best.pt \
-            --segmentation_model ../train/runs/segment/initial/weights/best.pt \
+            --segmentation_model ../train/runs/segment/large/weights/best.pt \
             --cutie_model ../../Cutie/weights/cutie-base-mega.pth \
             --video inputs/bloomberg.mp4 \
             --threshold 0.3 \
-            --output_dir out/bloomberg \
-            --low_mem
+            --output_dir out/bloomberg
+
+python run.py \
+    --detection_model ../train/runs/detect/medium/weights/best.pt \
+    --segmentation_model ../train/runs/segment/large/weights/best.pt \
+    --cutie_model ../../Cutie/weights/cutie-base-mega.pth \
+    --video ../videoClips/desk.mp4 \
+    --threshold 0.1 \
+    --output_dir out/desk
 
 """

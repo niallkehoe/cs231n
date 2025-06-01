@@ -45,3 +45,10 @@ rf = Roboflow(api_key="cUuR6Zpj8mZ1ZRFErnYo")
 # version = project.version(1)
 # dataset = version.download("yolov11", "laptop-screen-detection-vivek-1")
 
+# project = rf.workspace("segmentation-w6eax").project("laptop-4nvaf")
+# version = project.version(1)
+# dataset = version.download("yolov11")
+
+project = rf.workspace("myworkspace-mvnb3").project("screens-segmentation")
+version = project.version(7)
+dataset = version.download("yolov11")
