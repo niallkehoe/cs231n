@@ -1,145 +1,246 @@
-import os
-import glob
-import argparse
+"""
+Grounded-SAM evaluation on a segmentation test-set.
+
+Requirements
+------------
+pip install "torch>=2.1" torchvision --index-url https://download.pytorch.org/whl/cu121  # or cpu wheels
+pip install transformers==4.* pillow tqdm numpy opencv-python
+
+For faster CPU preprocessing:
+pip install safetensors accelerate
+
+The script:
+* detects the target object with Grounding DINO (open-vocabulary)
+* converts the resulting boxes to pixel-accurate masks with Segment Anything
+* aggregates metrics (Precision, Recall, F1, mIoU, Dice, AP@0.5, AP@0.5:0.95)
+"""
+
+import os, glob, argparse
 from tqdm import tqdm
 from PIL import Image
 import numpy as np
 import torch
-import torchvision.transforms as T
+from transformers import (
+    AutoProcessor, AutoModelForZeroShotObjectDetection,  # Grounding DINO
+    SamProcessor, SamModel                               # Segment Anything
+)
 
-from helpers import (
+# ──────────────────────────────────────────────────────────────────────────────
+# Helper utilities you already had
+# ──────────────────────────────────────────────────────────────────────────────
+# from helpers import (
+#     load_segmentation_mask,
+#     compute_segmentation_metrics,
+#     plot_segmentation_to_image
+# )
+from aux_helpers import (
     load_segmentation_mask,
     compute_segmentation_metrics,
     plot_segmentation_to_image
 )
 
-from groundingdino.util.inference import load_model, load_image, predict
+# ──────────────────────────────────────────────────────────────────────────────
+# 0) Load models once
+# ──────────────────────────────────────────────────────────────────────────────
+GD_MODEL_ID  = "IDEA-Research/grounding-dino-base"
+SAM_MODEL_ID = "facebook/sam-vit-base"          # ~375 MB, fits most GPUs; change if needed
 
-to_tensor = T.ToTensor()       # 0-1 float32, C×H×W
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
+print(f"▶ Loading Grounding DINO … {device}")
+gd_processor = AutoProcessor.from_pretrained(GD_MODEL_ID)
+gd_model     = AutoModelForZeroShotObjectDetection.from_pretrained(
+                  GD_MODEL_ID).to(device).eval()
+
+print("▶ Loading SAM …")
+sam_processor = SamProcessor.from_pretrained(SAM_MODEL_ID)
+sam_model     = SamModel.from_pretrained(SAM_MODEL_ID).to(device).eval()
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# 1) Helper: Grounding DINO → boxes (absolute pixel coords)
+# ──────────────────────────────────────────────────────────────────────────────
+@torch.no_grad()
+def grounded_boxes(pil_img: Image.Image,
+                   prompt: str,
+                   box_thr: float,
+                   text_thr: float):
+    """Return (boxes tensor [N,4], scores tensor [N]) in pixel space."""
+    text = prompt.lower().rstrip(".") + "."         # HF requirement
+    inputs = gd_processor(images=pil_img, text=text, return_tensors="pt").to(device)
+    outputs = gd_model(**inputs)
+
+    results = gd_processor.post_process_grounded_object_detection(
+        outputs,
+        inputs.input_ids,
+        box_threshold=box_thr,
+        text_threshold=text_thr,
+        target_sizes=[pil_img.size[::-1]]           # (H,W)
+    )[0]
+
+    if results["boxes"].numel() == 0:
+        return torch.empty((0, 4)), torch.empty(0)
+
+    return results["boxes"].cpu(), results["scores"].cpu()
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# 2) Helper: SAM → mask given boxes
+# ──────────────────────────────────────────────────────────────────────────────
+# ── improved SAM helper: boxes ➜ (H×W) union mask ────────────────────────────
+@torch.no_grad()
+def sam_union_mask(pil_img: Image.Image,
+                   boxes_px: torch.Tensor) -> np.ndarray:
+    """
+    boxes_px : tensor [N,4] in absolute coords (x0,y0,x1,y1)
+    returns  : np.uint8 mask (H_img, W_img) with values {0,1}
+    """
+    H_img, W_img = pil_img.size[1], pil_img.size[0]   # PIL gives (W,H)
+
+    # No detections → blank mask
+    if boxes_px.numel() == 0:
+        return np.zeros((H_img, W_img), dtype=np.uint8)
+
+    # 1. Prompt SAM
+    sam_inputs = sam_processor(
+        pil_img,
+        input_boxes=[boxes_px.cpu().tolist()],         # B=1
+        return_tensors="pt"
+    ).to(device)
+
+    sam_out = sam_model(**sam_inputs)
+
+    # 2. Upscale logits to full-res
+    masks = sam_processor.post_process_masks(
+        sam_out.pred_masks,                           # [1,N,256,256]
+        sam_inputs["original_sizes"],
+        sam_inputs["reshaped_input_sizes"]
+    )[0]                                              # [N, H_img', W_img']
+
+    # 3. Threshold & union over instances
+    union = (masks > 0.5).any(dim=0).cpu().numpy()    # bool or float32
+    union = union.astype(np.uint8)                    # {0,1}
+
+    # 4. Sanity-check shape
+    union = np.squeeze(union)                         # drop (1, …) axes
+    if union.ndim > 2:
+        union = union[0]                              # take first plane
+    if union.shape != (H_img, W_img):
+        # Resize (nearest-neighbour) to *exact* image dims
+        union = cv2.resize(union, (W_img, H_img),
+                           interpolation=cv2.INTER_NEAREST)
+
+    return union
+
+
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# 3) Main evaluation loop
+# ──────────────────────────────────────────────────────────────────────────────
 def main(args):
-    # ──────────────────────────────────────────────────────────────────────────
-    # 1) Load the GroundingDINO model using config+weights
-    # 2) Move it to CUDA if available, else keep on CPU
-    # ──────────────────────────────────────────────────────────────────────────
-    model = load_model(args.config, args.weights)
-    device = torch.device("cpu")
-    model = model.to(device)
-
     all_preds, all_gts, all_pred_scores = [], [], []
 
-    test_img_dir = os.path.join(args.test_dir, "images")
-    test_label_dir = os.path.join(args.test_dir, "labels")
-    output_dir = args.output_dir or "out/dino/sgmnt"
-    os.makedirs(output_dir, exist_ok=True)
+    img_dir   = os.path.join(args.test_dir, "images")
+    label_dir = os.path.join(args.test_dir, "labels")
+    os.makedirs(args.output_dir, exist_ok=True)
 
-    test_files = glob.glob(os.path.join(test_img_dir, "*.jpg"))
-    print(f"\nNumber of test images: {len(test_files)}")
+    test_files = glob.glob(os.path.join(img_dir, "*.jpg"))
+    print(f"\n🖼  {len(test_files)} test images found")
 
-    for i, img_fp in tqdm(enumerate(test_files), desc="Processing images"):
-        basename = os.path.splitext(os.path.basename(img_fp))[0]
-        lbl_fp = os.path.join(test_label_dir, basename + ".txt")
+    for img_idx, img_fp in tqdm(list(enumerate(test_files)), desc="Processing"):
+        stem   = os.path.splitext(os.path.basename(img_fp))[0]
+        lbl_fp = os.path.join(label_dir, stem + ".txt")
 
         pil_img = Image.open(img_fp).convert("RGB")
-        # img_tensor = to_tensor(pil_img).to(device)         # ← NEW: tensor on cpu/gpu
-                                                       # (shape 3×H×W, values 0-1)
-        # image_source  -> the untouched PIL image (good for visualisation)
-        # image         -> a C×H×W float32 tensor, resized + normalised the way DINO expects
-        image_source, image = load_image(img_fp)      # 👈 one-liner that does it all
-        image = image.to(device)
-                                                       
-        gt_mask = load_segmentation_mask(lbl_fp, pil_img.size)
-        all_gts.append(gt_mask)
 
-        boxes, logits, phrases = predict(
-            model=model,
-            image=image,
-            caption="screen",
-            box_threshold=0.3,
-            text_threshold=0.25,
-            device="cpu"
+        # 3.1 detect boxes
+        boxes, scores = grounded_boxes(
+            pil_img,
+            args.prompt,
+            args.box_threshold,
+            args.text_threshold
         )
 
-        pred_mask = np.zeros(gt_mask.shape, dtype=np.uint8)
+        # 3.2 boxes → mask via SAM
+        pred_mask = sam_union_mask(pil_img, boxes)
 
-        if boxes is not None and len(boxes) > 0:
-            # Simple bounding-box-to-mask approximation
-            for box in boxes:
-                x1, y1, x2, y2 = box.int().cpu().numpy()
-                pred_mask[y1:y2, x1:x2] = 1
-            score = float(torch.max(logits).item())
-        else:
-            score = 0.0
+        # 3.3 load GT mask (expects same H×W as image)
+        gt_mask = load_segmentation_mask(lbl_fp, pil_img.size)
 
         all_preds.append(pred_mask)
-        all_pred_scores.append(score)
-
-        # print(f"pred_mask: {pred_mask.shape}")
-        # print(pred_mask)
+        all_gts.append(gt_mask)
+        all_pred_scores.append(scores.max().item() if scores.numel() else 0.0)
 
         if args.verbose:
-            vis_img = plot_segmentation_to_image(pil_img.copy(), pred_mask)
-            vis_img.save(os.path.join(output_dir, f"{basename}_dino.jpg"))
+            vis = plot_segmentation_to_image(pil_img.copy(), pred_mask)
+            vis.save(os.path.join(args.output_dir, f"{stem}_gsam.jpg"))
 
-        if i > 1:
-            break
+        # if img_idx >= 4:
+        #     break
 
+    # 4) Metrics
     miou, dice, precision, recall, f1, ap50, ap50_95 = compute_segmentation_metrics(
         all_preds, all_gts, all_pred_scores
     )
 
-    print(f"\n[DINO Evaluation Metrics]")
-    print(f"Precision: {precision:.4f}")
-    print(f"Recall: {recall:.4f}")
-    print(f"F1 Score: {f1:.4f}")
-    print(f"Mean IoU: {miou:.4f}")
-    print(f"Dice Score: {dice:.4f}")
-    print(f"AP@0.5: {ap50:.4f}")
-    print(f"AP@0.5:0.95: {ap50_95:.4f}")
+    print("\n[Grounded-SAM evaluation]")
+    print(f"Precision      : {precision:.4f}")
+    print(f"Recall         : {recall:.4f}")
+    print(f"F1 Score       : {f1:.4f}")
+    print(f"Mean IoU       : {miou:.4f}")
+    print(f"Dice Score     : {dice:.4f}")
+    print(f"AP@0.5         : {ap50:.4f}")
+    print(f"AP@0.5:0.95    : {ap50_95:.4f}")
 
 
+# ──────────────────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--config", type=str, default="config/GroundingDINO_SwinT_OGC.py")
-    parser.add_argument("--weights", type=str, default="../weights/groundingdino_swint_ogc.pth")
-    parser.add_argument("--test_dir", type=str, required=True)
-    parser.add_argument("--output_dir", type=str, default="out/dino/sgmnt")
-    parser.add_argument("--verbose", action="store_true")
+    parser.add_argument("--test_dir",       type=str, required=True,
+                        help="Folder containing images/ and labels/ sub-dirs")
+    parser.add_argument("--prompt",         type=str, default="screen",
+                        help="Object/category to detect (lower-cased automatically)")
+    parser.add_argument("--box_threshold",  type=float, default=0.3)
+    parser.add_argument("--text_threshold", type=float, default=0.25)
+    parser.add_argument("--output_dir",     type=str, default="out/grounded_sam")
+    parser.add_argument("--verbose",        action="store_true",
+                        help="Save visualisations for every frame")
     args = parser.parse_args()
+
     main(args)
 
 
 
 """
-
-Val (158 examples): (time: )
-
 python eval_DINO_sgmnt.py \
-    --config ../config/GroundingDINO_SwinT_OGC.py \
-    --weights ../../weights/groundingdino_swint_ogc.pth \
-    --test_dir ../datasets/segmentation-dataset/test \
+    --test_dir ../datasets/segmentation-dataset/valid \
+    --prompt "screen" \
     --output_dir out/dino/sgmnt \
-    --verbose
-
-Precision: 0.7493
-Recall: 0.8532
-F1 Score: 0.7666
-Mean IoU: 0.6997
-Dice Score: 0.7666
-AP@0.5: 0.6926
-AP@0.5:0.95: 0.5123
+    --box_threshold 0.3 \
+    --text_threshold 0.25
+  
+Precision      : 0.8876
+Recall         : 0.7760
+F1 Score       : 0.7998
+Mean IoU       : 0.7222
+Dice Score     : 0.7998
+AP@0.5         : 0.6738
+AP@0.5:0.95    : 0.4985
 
 Test (81 examples):
 python eval_DINO_sgmnt.py \
-    --model_path ../train/runs/segment/medium/weights/best.pt \
     --test_dir ../datasets/segmentation-dataset/test \
-    --output_dir out/dino/sgmnt
+    --prompt "screen" \
+    --output_dir out/dino/sgmnt \
+    --box_threshold 0.3 \
+    --text_threshold 0.25 \
 
-Precision: 0.7630
-Recall: 0.8783
-F1 Score: 0.7906
-Mean IoU: 0.7263
-Dice Score: 0.7906
-AP@0.5: 0.6917
-AP@0.5:0.95: 0.5576
+Precision      : 0.8418
+Recall         : 0.7839
+F1 Score       : 0.7810
+Mean IoU       : 0.6841
+Dice Score     : 0.7810
+AP@0.5         : 0.6637
+AP@0.5:0.95    : 0.4199
 """
