@@ -37,7 +37,7 @@ def show_delta(load_fn, name="model"):
 
 # CUTIE_AVAILABLE = False
 class YOLOCutiePipeline:
-    def __init__(self, detection_model_path, segmentation_model_path, cutie_model_path=None, confidence_threshold=0.5, show_boxes=False, low_mem=False, logo_path=None):
+    def __init__(self, detection_model_path, segmentation_model_path, cutie_model_path=None, confidence_threshold=0.5, show_boxes=False, low_mem=False, logo_path=None, draw_border=True):
         """
         Initialize the YOLO-Cutie hybrid pipeline.
         
@@ -53,7 +53,8 @@ class YOLOCutiePipeline:
         self.confidence_threshold = confidence_threshold
         self.show_boxes = show_boxes
         self.low_mem = low_mem
-        self.logo_path = logo_path
+        self.logo_image = None
+        self.draw_border = draw_border
 
         if logo_path is not None:
             logo = cv2.imread(logo_path, cv2.IMREAD_UNCHANGED)
@@ -113,33 +114,6 @@ class YOLOCutiePipeline:
                 cv2.putText(frame, f"{conf:.2f}", (x1, y1 - 6),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 0), 1)
 
-
-    # helper: centralise resize + dtype choice
-    # def _cv2_to_tensor(self, frame_bgr):
-    #     # ↓ optional resize for 720-long-side
-    #     if self.low_mem:
-    #         h, w = frame_bgr.shape[:2]
-    #         scale = 720.0 / max(h, w)
-    #         if scale < 1.0:
-    #             frame_bgr = cv2.resize(frame_bgr,
-    #                                 (int(w * scale), int(h * scale)),
-    #                                 interpolation=cv2.INTER_AREA)
-
-    #     # ↓ pad H, W to multiples of 32
-    #     h, w = frame_bgr.shape[:2]
-    #     pad_h, pad_w = (-h) % 32, (-w) % 32
-    #     if pad_h or pad_w:
-    #         frame_bgr = cv2.copyMakeBorder(frame_bgr, 0, pad_h, 0, pad_w,
-    #                                     cv2.BORDER_CONSTANT, value=0)
-
-    #     # ↓ BGR→RGB → tensor (0-1) → send to same device *and* dtype as model
-    #     frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
-    #     tensor = F.to_tensor(frame_rgb)                          # FP32 here
-
-    #     if self.cutie_model is not None:                         # always true in tracking
-    #         p = next(self.cutie_model.parameters())
-    #         tensor = tensor.to(device=p.device, dtype=p.dtype)   # ← key line
-
     #     return tensor
     def _cv2_to_tensor(self, frame_bgr):
         # optional low‑mem resize (long side ≤ 720 px)
@@ -160,9 +134,6 @@ class YOLOCutiePipeline:
         if self.low_mem:                                # --low_mem implies FP16
             tensor = tensor.half()
         return tensor.to(self.cutie_model.device)
-
-
-
 
     # ---------------------------------------------------------------------------
 
@@ -403,33 +374,49 @@ class YOLOCutiePipeline:
                 if self.show_boxes:
                     self._draw_detection_boxes(display_frame, detection_results)
                 
+                detection_results = self.detection_model(frame, verbose=False)
+                max_confidence = self._get_max_confidence(detection_results)
+                current_confidence = max_confidence
+
+                # or count detection_results[0].boxes to see how many boxes YOLO sees
+                num_detections = sum(len(r.boxes) for r in detection_results if r.boxes is not None)
+
+                def _initiate_track():
+                    # Run segmentation
+                    segmentation_results = self.segmentation_model(frame, verbose=False)
+                    masks = self._extract_masks_from_segmentation(segmentation_results)
+
+                    # if frame_count == 13:
+                    #     print(f"Frame {frame_count}: Segmentation results: {segmentation_results}")
+                    #     print(f"Frame {frame_count}: Masks: {masks}")
+                    #     sys.exit()
+                    
+                    if masks:
+                        # Create segmented image
+                        segmented_image = self._create_segmented_image(frame, masks)
+                        display_frame = segmented_image.copy()
+                        self.last_instance_count = len(masks)
+                        source_type = "detection+segmentation"
+                        
+                        # Initialize tracking if Cutie is available
+                        if CUTIE_AVAILABLE and self.cutie_model:
+                            success = self._initialize_cutie_tracking(frame, masks)
+                            if success:
+                                print(f"  -> Tracking initialized with {len(masks)} instances")
+                            else:
+                                print("  -> Failed to initialize tracking, continuing with detection mode")
+                    else:
+                        print("  -> No masks found, switching to detection mode")
+                        # No masks found, switch to detection mode
+                        self.is_tracking = False
+                        self.last_instance_count = 0
+
+
                 if not self.is_tracking:
                     # Detection mode: Look for objects to start tracking
-                    detection_results = self.detection_model(frame, verbose=False)
-                    max_confidence = self._get_max_confidence(detection_results)
-                    current_confidence = max_confidence
-                    
                     if max_confidence >= self.confidence_threshold:
                         print(f"Frame {frame_count}: Detection triggered (conf: {max_confidence:.3f})")
-                        
-                        # Run segmentation
-                        segmentation_results = self.segmentation_model(frame, verbose=False)
-                        masks = self._extract_masks_from_segmentation(segmentation_results)
-                        
-                        if masks:
-                            # Create segmented image
-                            segmented_image = self._create_segmented_image(frame, masks)
-                            display_frame = segmented_image.copy()
-                            self.last_instance_count = len(masks)
-                            source_type = "detection+segmentation"
-                            
-                            # Initialize tracking if Cutie is available
-                            if CUTIE_AVAILABLE and self.cutie_model:
-                                success = self._initialize_cutie_tracking(frame, masks)
-                                if success:
-                                    print(f"  -> Tracking initialized with {len(masks)} instances")
-                                else:
-                                    print("  -> Failed to initialize tracking, continuing with detection mode")
+                        _initiate_track()
                         
                 else:
                     # Tracking mode: Use Cutie to track existing objects
@@ -446,26 +433,7 @@ class YOLOCutiePipeline:
                         # Instance count changed - re-run segmentation and restart tracking
                         print(f"Frame {frame_count}: Instance count changed ({self.last_instance_count} -> {instance_count})")
                         print("  -> Re-running segmentation")
-                        
-                        segmentation_results = self.segmentation_model(frame, verbose=False)
-                        masks = self._extract_masks_from_segmentation(segmentation_results)
-                        
-                        if masks:
-                            segmented_image = self._create_segmented_image(frame, masks)
-                            display_frame = segmented_image.copy()
-                            self.last_instance_count = len(masks)
-                            source_type = "re-segmentation"
-                            
-                            # Restart tracking with new masks
-                            success = self._initialize_cutie_tracking(frame, masks)
-                            if success:
-                                print(f"  -> Tracking restarted with {len(masks)} instances")
-                            else:
-                                print("  -> Failed to restart tracking")
-                        else:
-                            # No masks found, switch to detection mode
-                            self.is_tracking = False
-                            self.last_instance_count = 0
+                        _initiate_track()
                             
                     else:
                         # Normal tracking - use tracked masks
@@ -494,12 +462,14 @@ class YOLOCutiePipeline:
                     video_writer.write(display_frame)
                 
                 # Save individual frames only if save_all_frames is True
-                if save_all_frames and segmented_image is not None:
+                if save_all_frames:
                     video_name = Path(video_path).stem
                     output_filename = f"{video_name}_frame_{frame_count:06d}_{source_type}_conf_{current_confidence:.3f}.jpg"
                     output_path = os.path.join(frames_dir, output_filename)
                     
-                    cv2.imwrite(output_path, segmented_image)
+                    # Save either segmented image or original frame if segmented_image is None
+                    image_to_save = segmented_image if segmented_image is not None else frame
+                    cv2.imwrite(output_path, image_to_save)
                     saved_images.append(output_path)
                     
                     # Optionally save original frame
@@ -653,13 +623,14 @@ class YOLOCutiePipeline:
             # Blur the masked region
             result_image[binary == 1] = blurred_full[binary == 1]
 
-            # Draw a thin white contour around the blurred area
-            contours, _ = cv2.findContours(
-                binary,
-                cv2.RETR_EXTERNAL,
-                cv2.CHAIN_APPROX_SIMPLE
-            )
-            cv2.drawContours(result_image, contours, -1, (255, 255, 255), 2)
+            if self.draw_border:
+                # Draw a thin white contour around the blurred area
+                contours, _ = cv2.findContours(
+                    binary,
+                    cv2.RETR_EXTERNAL,
+                    cv2.CHAIN_APPROX_SIMPLE
+                )
+                cv2.drawContours(result_image, contours, -1, (255, 255, 255), 2)
 
             # If a logo is loaded, overlay it at the centroid of this mask
             if self.logo_image is not None:
@@ -681,52 +652,82 @@ class YOLOCutiePipeline:
         """Create segmented image from mask list (compatibility method)."""
         return self._create_segmented_image_from_masks(original_frame, masks)
     
-    def _add_status_overlay(self, frame, frame_num, source_type, confidence, instance_count):
-        """Add status information overlay to the frame."""
+    def _add_status_overlay(self, frame, frame_num, source_type, confidence, instance_count, overlay_position="bottom-left"):
+        """Add status information overlay to the frame, either top-left or bottom-left."""
         overlay_frame = frame.copy()
-        
-        # Create semi-transparent overlay area
-        overlay = overlay_frame.copy()
-        cv2.rectangle(overlay, (10, 10), (400, 120), (0, 0, 0), -1)
-        cv2.addWeighted(overlay, 0.7, overlay_frame, 0.3, 0, overlay_frame)
-        
-        # Add text information
-        font = cv2.FONT_HERSHEY_SIMPLEX
-        font_scale = 0.6
-        color = (255, 255, 255)
-        thickness = 1
-        
-        # Frame number
-        cv2.putText(overlay_frame, f"Frame: {frame_num}", (20, 35), 
-                font, font_scale, color, thickness)
-        
-        # Mode and source
-        # mode = "TRACKING" if source_type == "tracking" else "DETECTION"
-        mode = {
-            "tracking":          "TRACKING",
-            "detection+segmentation": "DETECTION",
-            "re-segmentation":   "RE-SEGMENT"
-        }.get(source_type, "DETECTION")
+        H, W = overlay_frame.shape[:2]
 
+        # Dimensions of the overlay box
+        box_width  = 400
+        box_height = 120
+
+        # Determine where to place the rectangle:
+        if overlay_position == "bottom-left":
+            # bottom-left: x=10, y = H - 10 - box_height
+            x0, y0 = 10, H - 10 - box_height
+            x1, y1 = 10 + box_width, H - 10
+            text_y_offset = y0 + 25  # first text line goes here
+        else:
+            # default top-left: x=10, y=10
+            x0, y0 = 10, 10
+            x1, y1 = 10 + box_width, 10 + box_height
+            text_y_offset = y0 + 25
+
+        # 1) Draw semi-transparent rectangle
+        overlay = overlay_frame.copy()
+        cv2.rectangle(overlay, (x0, y0), (x1, y1), (0, 0, 0), -1)
+        cv2.addWeighted(overlay, 0.7, overlay_frame, 0.3, 0, overlay_frame)
+
+        # 2) Add text lines inside that box
+        font       = cv2.FONT_HERSHEY_SIMPLEX
+        font_scale = 0.6
+        color      = (255, 255, 255)
+        thickness  = 1
+
+        # Compute line spacing
+        line_height = 20
+
+        # Frame number
+        cv2.putText(
+            overlay_frame,
+            f"Frame: {frame_num}",
+            (x0 + 10, text_y_offset),
+            font, font_scale, color, thickness
+        )
+
+        # Mode line (use a colored font for tracking vs. detection)
+        mode = {
+            "tracking":               "TRACKING",
+            "detection+segmentation": "DETECTION",
+            "re-segmentation":        "RE-SEGMENT"
+        }.get(source_type, "DETECTION")
         mode_color = (0, 255, 0) if source_type == "tracking" else (0, 255, 255)
-        cv2.putText(overlay_frame, f"Mode: {mode}", (20, 55), 
-                font, font_scale, mode_color, thickness)
-        
-        # Source type
-        cv2.putText(overlay_frame, f"Source: {source_type}", (20, 75), 
-                font, font_scale, color, thickness)
-        
-        # Confidence (if available)
+        cv2.putText(
+            overlay_frame,
+            f"Mode: {mode} ({instance_count} instances)",
+            (x0 + 10, text_y_offset + line_height),
+            font, font_scale, mode_color, thickness
+        )
+
+        # Confidence (if > 0)
         if confidence > 0:
-            cv2.putText(overlay_frame, f"Confidence: {confidence:.3f}", (20, 95), 
-                    font, font_scale, color, thickness)
-        
+            cv2.putText(
+                overlay_frame,
+                f"Confidence: {confidence:.3f}",
+                (x0 + 10, text_y_offset + 2*line_height),
+                font, font_scale, color, thickness
+            )
+
         # Instance count
-        cv2.putText(overlay_frame, f"Instances: {instance_count}", (200, 35), 
-                font, font_scale, color, thickness)
-        
+        cv2.putText(
+            overlay_frame,
+            f"Instances: {instance_count}",
+            (x0 + 200, text_y_offset),
+            font, font_scale, color, thickness
+        )
+
         return overlay_frame
-    
+
     def _generate_colors(self, num_colors):
         """Generate distinct colors for different mask instances."""
         colors = []
@@ -750,8 +751,10 @@ def main():
     parser.add_argument('--show_boxes', action='store_true', help='Draw YOLO detection boxes (default: off)')# CLI
     parser.add_argument('--low_mem', action='store_true',
                         help='Run Cutie in half-precision at 720 p (uses <8 GB VRAM)')
-    parser.add_argument('--logo', type=str, default=None,
+    parser.add_argument('--logo_path', type=str, default=None,
                         help='Path to a PNG (with optional alpha) company logo to overlay on each masked region')
+    parser.add_argument('--no_border', action='store_true', help='Do not draw the white contour around each masked region')
+ 
  
 
     
@@ -765,7 +768,8 @@ def main():
         confidence_threshold=args.threshold,
         show_boxes=args.show_boxes,
         low_mem=args.low_mem,
-        logo_path=args.logo
+        logo_path=args.logo_path,
+        draw_border=not args.no_border
     )
     
     # Process video
@@ -791,3 +795,35 @@ def main():
 if __name__ == "__main__":
     main()
 
+
+"""
+
+python run_inpainting.py     \
+    --detection_model ../train/runs/detect/medium/weights/best.pt     \
+    --segmentation_model ../train/runs/segment/large/weights/best.pt     \
+     --cutie_model ../../Cutie/weights/cutie-base-mega.pth      \
+     --video ../videoClips/dayinthelife.mp4      \
+     --threshold 0.3     \
+     --output_dir out/dayinthelife \
+     --no_border
+
+python run_inpainting.py     \
+    --detection_model ../train/runs/detect/medium/weights/best.pt     \
+    --segmentation_model ../train/runs/segment/large/weights/best.pt    \
+     --cutie_model ../../Cutie/weights/cutie-base-mega.pth     \
+     --video ../videoClips/dayinthelife.mp4     \
+     --threshold 0.3     \
+     --output_dir out/dayinthelife \
+     --no_border \
+     --logo_path inputs/stanford_logo.png
+
+python run_inpainting.py     \
+    --detection_model ../train/runs/detect/medium/weights/best.pt     \
+    --segmentation_model ../train/runs/segment/large/weights/best.pt     \
+     --cutie_model ../../Cutie/weights/cutie-base-mega.pth      \
+     --video ../videoClips/intern.mp4      \
+     --threshold 0.3     \
+     --output_dir out/intern \
+     --no_border
+
+"""
