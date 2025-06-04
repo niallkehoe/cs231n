@@ -48,15 +48,22 @@ The ScreenShield pipeline consists of four key stages:
 
 ---
 
-## 📂 Datasets
+## Datasets
 
-- **Detection**
-  - Roboflow Computer Monitor Dataset
-  - Roboflow TV/PC/Monitor Dataset
-  - Roboflow Office Monitor Dataset
-- **Segmentation**
-  - Roboflow Screen Segmentation
-  - Custom YouTube dataset (hand-labeled)
+### Detection
+
+- [RoboFlow Computer Monitor Dataset](https://universe.roboflow.com/n-j7ohx/computer-monitor-0cbhd)
+- [RoboFlow TV, PC, Monitors Dataset](https://universe.roboflow.com/energy-chaser/monitors-tvs-pc-monitors-etc)
+- [RoboFlow Office Monitor Dataset](https://universe.roboflow.com/4-52p2c/office-monitor-r7oge)
+- [RoboFlow Screen Dataset](https://universe.roboflow.com/pavement-wwadi/screen-7i6h8)
+
+### Segmentation
+
+- [Our Custom Dataset](https://universe.roboflow.com/myworkspace-mvnb3/screens-segmentation)
+- [RoboFlow Screen Segmentation](https://universe.roboflow.com/pavement-wwadi/screen-7i6h8)
+- [RoboFlow Laptop Screen Detection](https://universe.roboflow.com/laptop-screen-detection/laptop-screen-detection-lohtq)
+- [RoboFlow Laptop Screen Detection (Vivek version)](https://universe.roboflow.com/vivek-kumar-kirw1/laptop-screen-detection)
+
 
 ## 🧪 Conda Environments
 
