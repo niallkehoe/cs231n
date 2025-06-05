@@ -1,6 +1,6 @@
 from roboflow import Roboflow
 
-rf = Roboflow(api_key="cUuR6Zpj8mZ1ZRFErnYo")
+rf = Roboflow(api_key=API_KEY_HERE)
 
 # 1. ComputerMonitor: https://universe.roboflow.com/n-j7ohx/computer-monitor-0cbhd/dataset/1
 # project = rf.workspace("n-j7ohx").project("computer-monitor-0cbhd")
